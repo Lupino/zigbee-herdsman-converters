@@ -21,7 +21,7 @@ const calibrateAndPrecisionRoundOptions = (number, options, type) => {
     // Calibrate
     const calibrateKey = `${type}_calibration`;
     let calibrationOffset = options && options.hasOwnProperty(calibrateKey) ? options[calibrateKey] : 0;
-    if (type == 'illuminance') {
+    if (type == 'illuminance' || type === 'illuminance_lux') {
         // linear calibration because measured value is zero based
         // +/- percent
         calibrationOffset = Math.round(number * calibrationOffset / 100);
@@ -352,6 +352,10 @@ const converters = {
                 smoke: (zoneStatus & 1) > 0,
                 tamper: (zoneStatus & 1<<2) > 0,
                 battery_low: (zoneStatus & 1<<3) > 0,
+                supervision_reports: (zoneStatus & 1<<4) > 0,
+                restore_reports: (zoneStatus & 1<<5) > 0,
+                trouble: (zoneStatus & 1<<6) > 0,
+                ac_status: (zoneStatus & 1<<7) > 0,
             };
         },
     },
@@ -586,10 +590,21 @@ const converters = {
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             if (msg.data['65281']) {
-                return {
-                    illuminance: calibrateAndPrecisionRoundOptions(msg.data['65281']['11'], options, 'illuminance'),
-                };
+                // DEPRECATED: only return lux here (change illuminance_lux -> illuminance)
+                let illuminance = msg.data['65281']['11'];
+                illuminance = calibrateAndPrecisionRoundOptions(illuminance, options, 'illuminance');
+                return {illuminance, illuminance_lux: illuminance};
             }
+        },
+    },
+    RTCGQ11LM_illuminance: {
+        cluster: 'msIlluminanceMeasurement',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            // DEPRECATED: only return lux here (change illuminance_lux -> illuminance)
+            let illuminance = msg.data['measuredValue'];
+            illuminance = calibrateAndPrecisionRoundOptions(illuminance, options, 'illuminance');
+            return {illuminance, illuminance_lux: illuminance};
         },
     },
     WSDCGQ01LM_WSDCGQ11LM_interval: {
@@ -952,8 +967,13 @@ const converters = {
         cluster: 'msIlluminanceMeasurement',
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
+            // DEPRECATED: only return lux here (change illuminance_lux -> illuminance)
             const illuminance = msg.data['measuredValue'];
-            return {illuminance: calibrateAndPrecisionRoundOptions(illuminance, options, 'illuminance')};
+            const illuminanceLux = Math.round(Math.pow(10, illuminance / 10000) - 1);
+            return {
+                illuminance: calibrateAndPrecisionRoundOptions(illuminance, options, 'illuminance'),
+                illuminance_lux: calibrateAndPrecisionRoundOptions(illuminanceLux, options, 'illuminance_lux'),
+            };
         },
     },
     generic_pressure: {
@@ -1457,6 +1477,14 @@ const converters = {
             if (msg.data['1283']) {
                 const data = msg.data['1283'];
                 result.angle = data;
+            }
+
+            if (msg.data['1285']) {
+                // https://github.com/dresden-elektronik/deconz-rest-plugin/issues/748#issuecomment-419669995
+                // Only first 2 bytes are relevant.
+                const data = (msg.data['1285'] >> 8);
+                // Swap byte order
+                result.strength = ((data & 0xFF) << 8) | ((data >> 8) & 0xFF);
             }
 
             if (msg.data['1288']) {
@@ -2051,16 +2079,6 @@ const converters = {
             };
         },
     },
-    st_leak: {
-        cluster: 'ssIasZone',
-        type: ['attributeReport', 'commandStatusChangeNotification', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            const zoneStatus = msg.data.zonestatus;
-            return {
-                water_leak: (zoneStatus & 1) > 0, // Bit 1 = wet
-            };
-        },
-    },
     st_button_state: {
         cluster: 'ssIasZone',
         type: 'commandStatusChangeNotification',
@@ -2207,6 +2225,32 @@ const converters = {
             }
             if (typeof msg.data['pIHeatingDemand'] == 'number') {
                 result.pi_heating_demand = precisionRound(msg.data['pIHeatingDemand'] / 255.0 * 100.0, 0);
+            }
+            if (typeof msg.data['tempSetpointHold'] == 'number') {
+                result.temperature_setpoint_hold = msg.data['tempSetpointHold'];
+            }
+            if (typeof msg.data['tempSetpointHoldDuration'] == 'number') {
+                result.temperature_setpoint_hold_duration = msg.data['tempSetpointHoldDuration'];
+            }
+            return result;
+        },
+    },
+    thermostat_weekly_schedule_rsp: {
+        cluster: 'hvacThermostat',
+        type: ['commandGetWeeklyScheduleRsp'],
+        convert: (model, msg, publish, options, meta) => {
+            const result = {};
+            result.weekly_schedule = {};
+            if (typeof msg.data['dayofweek'] == 'number') {
+                result.weekly_schedule[msg.data['dayofweek']] = msg.data;
+                for (const elem of result.weekly_schedule[msg.data['dayofweek']]['transitions']) {
+                    if (typeof elem['heatSetpoint'] == 'number') {
+                        elem['heatSetpoint'] /= 100;
+                    }
+                    if (typeof elem['coolSetpoint'] == 'number') {
+                        elem['coolSetpoint'] /= 100;
+                    }
+                }
             }
             return result;
         },
@@ -2381,6 +2425,23 @@ const converters = {
             return {
                 action: `brightness_${direction}_release`,
             };
+        },
+    },
+    SA003_on_off: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const last = store[msg.device.ieeeAddr];
+            const current = msg.meta.zclTransactionSequenceNumber;
+
+            if (msg.type === 'attributeReport') {
+                msg.meta.frameControl.disableDefaultResponse = true;
+            }
+
+            if (last !== current && msg.data.hasOwnProperty('onOff')) {
+                store[msg.device.ieeeAddr] = current;
+                return {state: msg.data['onOff'] === 1 ? 'ON' : 'OFF'};
+            }
         },
     },
     tint404011_scene: {
@@ -3352,6 +3413,44 @@ const converters = {
             };
         },
     },
+    aqara_opple_report: {
+        cluster: 'aqaraOpple',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            // it is like xiaomi_battery_3v, but not parsed
+            // https://github.com/Koenkk/zigbee-herdsman/blob/master/src/zcl/buffaloZcl.ts#L93
+            // data: { '247': <Buffer 01 21 b8 0b 03 28 19 04 21 a8 13 05 21 44 01 06 24 02
+            //                        00 00 00 00 08 21 11 01 0a 21 00 00 0c 20 01 64 10 00> }
+            let voltage = null;
+
+            if (msg.data['247']) {
+                voltage = msg.data['247'][2] + msg.data['247'][3]*256;
+            }
+
+            if (voltage) {
+                return {
+                    battery: parseFloat(toPercentageCR2032(voltage)),
+                    voltage: voltage,
+                };
+            }
+        },
+    },
+    aqara_opple_multistate: {
+        cluster: 'genMultistateInput',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const actionLookup = {
+                0: 'hold',
+                255: 'release',
+                1: 'single',
+                2: 'double',
+                3: 'triple',
+            };
+            const btn = msg.endpoint.ID;
+            const value = msg.data.presentValue;
+            return {action: `button_${btn}_${actionLookup[value]}`};
+        },
+    },
     aqara_opple_on: {
         cluster: 'genOnOff',
         type: 'commandOn',
@@ -3370,8 +3469,8 @@ const converters = {
         cluster: 'genLevelCtrl',
         type: 'commandStep',
         convert: (model, msg, publish, options, meta) => {
-            const button = msg.data.stepmode === 0 ? 'button_4' : 'button_3';
-            return {action: `${button}_single`};
+            const button = msg.data.stepmode === 0 ? '4' : '3';
+            return {action: `button_${button}_single`};
         },
     },
     aqara_opple_stop: {
@@ -3382,7 +3481,7 @@ const converters = {
             if (store[deviceID]) {
                 const duration = Date.now() - store[deviceID].start;
                 const button = store[deviceID].button;
-                return {action: `${button}_release`, duration: duration};
+                return {action: `button_${button}_release`, duration: duration};
             }
         },
     },
@@ -3395,10 +3494,10 @@ const converters = {
             if (!store[deviceID]) {
                 store[deviceID] = {};
             }
-            const button = msg.data.movemode === 0 ? 'button_4' : 'button_3';
+            const button = msg.data.movemode === 0 ? '4' : '3';
             store[deviceID].button = button;
             store[deviceID].start = Date.now();
-            return {action: `${button}_hold`};
+            return {action: `button_${button}_hold`};
         },
     },
     aqara_opple_step_color_temp: {
@@ -3408,12 +3507,12 @@ const converters = {
             let act;
             if (model.model === 'WXCJKG12LM') {
                 // for WXCJKG12LM model it's double click event on buttons 3 and 4
-                act = (msg.data.stepmode === 1) ? 'button_3_double' : 'button_4_double';
+                act = (msg.data.stepmode === 1) ? '3_double' : '4_double';
             } else {
                 // but for WXCJKG13LM model it's single click event on buttons 5 and 6
-                act = (msg.data.stepmode === 1) ? 'button_5_single' : 'button_6_single';
+                act = (msg.data.stepmode === 1) ? '5_single' : '6_single';
             }
-            return {action: act};
+            return {action: `button_${act}`};
         },
     },
     aqara_opple_move_color_temp: {
@@ -3430,11 +3529,11 @@ const converters = {
             if (stop) {
                 button = store[deviceID].button;
                 const duration = Date.now() - store[deviceID].start;
-                result.action = `${button}_release`;
+                result.action = `button_${button}_release`;
                 result.duration = duration;
             } else {
-                button = msg.data.movemode === 3 ? 'button_6' : 'button_5';
-                result.action = `${button}_hold`;
+                button = msg.data.movemode === 3 ? '6' : '5';
+                result.action = `button_${button}_hold`;
                 // store button and start moment
                 store[deviceID].button = button;
                 store[deviceID].start = Date.now();
@@ -3749,6 +3848,60 @@ const converters = {
             }
         },
     },
+    tuya_switch: {
+        cluster: 'manuSpecificTuyaDimmer',
+        type: 'raw',
+        convert: (model, msg, publish, options, meta) => {
+            const key = msg.data[5];
+            const val = msg.data[9];
+            const lookup = {
+                1: 'state_l1',
+                2: 'state_l2',
+                3: 'state_l3',
+                4: 'state_l4',
+            };
+            return {[lookup[key]]: (val) ? 'ON': 'OFF'};
+        },
+    },
+    almond_click: {
+        cluster: 'ssIasAce',
+        type: ['commandArm'],
+        convert: (model, msg, publish, options, meta) => {
+            const action = msg.data['armmode'];
+            delete msg.data['armmode'];
+            const lookup = {
+                3: {action: 'single'}, // single click
+                0: {action: 'double'}, // double
+                2: {action: 'long'}, // hold
+            };
+
+            // Workaround to ignore duplicated (false) presses that
+            // are 100ms apart, since the button often generates
+            // multiple duplicated messages for a single click event.
+            const deviceID = msg.device.ieeeAddr;
+            if (!store[deviceID]) {
+                store[deviceID] = {since: 0};
+            }
+
+            const now = Date.now();
+            const since = store[deviceID].since;
+
+            if ((now-since)>100) {
+                store[deviceID].since = now;
+                return lookup[action] ? lookup[action] : null;
+            } else {
+                return;
+            }
+        },
+    },
+    blitzwolf_occupancy_with_timeout: {
+        cluster: 'manuSpecificTuyaDimmer',
+        type: 'commandGetData',
+        convert: (model, msg, publish, options, meta) => {
+            msg.data.occupancy = msg.data.dp === 1027 ? 1 : 0;
+            return converters.occupancy_with_timeout.convert(model, msg, publish, options, meta);
+        },
+    },
 
     // Ignore converters (these message dont need parsing).
     ignore_onoff_report: {
@@ -3883,6 +4036,11 @@ const converters = {
     },
     ignore_zclversion_read: {
         cluster: 'genBasic',
+        type: 'read',
+        convert: (model, msg, publish, options, meta) => null,
+    },
+    ignore_time_read: {
+        cluster: 'genTime',
         type: 'read',
         convert: (model, msg, publish, options, meta) => null,
     },

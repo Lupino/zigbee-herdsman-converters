@@ -1,12 +1,13 @@
 {
   "name": "zigbee-herdsman-converters",
-  "version": "12.0.0",
+  "version": "12.0.23",
   "description": "Collection of device converters to be used with zigbee-herdsman",
   "main": "index.js",
   "files": [
     "/index.js",
     "/converters",
-    "/devices.js"
+    "/devices.js",
+    "/ota"
   ],
   "repository": {
     "type": "git",
@@ -30,7 +31,9 @@
     "url": "https://github.com/Koenkk/zigbee-herdsman-converters/issues"
   },
   "homepage": "https://github.com/Koenkk/zigbee-herdsman-converters",
-  "dependencies": {},
+  "dependencies": {
+    "axios": "*"
+  },
   "devDependencies": {
     "eslint": "*",
     "eslint-config-google": "*",
