@@ -26,7 +26,6 @@ function parseSubElement(buffer, position) {
 }
 
 function parseImage(buffer) {
-    const headerLength = 56;
     const header = {
         otaUpgradeFileIdentifier: buffer.subarray(0, 4),
         otaHeaderVersion: buffer.readUInt16LE(4),
@@ -39,21 +38,35 @@ function parseImage(buffer) {
         otaHeaderString: buffer.toString('utf8', 20, 52),
         totalImageSize: buffer.readUInt32LE(52),
     };
+    let headerPos = 56;
+    if (header.otaHeaderFieldControl & 1) {
+        header.securityCredentialVersion = buffer.readUInt8(headerPos);
+        headerPos += 1;
+    }
+    if (header.otaHeaderFieldControl & 2) {
+        header.upgradeFileDestination = buffer.subarray(headerPos, headerPos + 8);
+        headerPos += 8;
+    }
+    if (header.otaHeaderFieldControl & 4) {
+        header.minimumHardwareVersion = buffer.readUInt16LE(headerPos);
+        headerPos += 2;
+        header.maximumHardwareVersion = buffer.readUInt16LE(headerPos);
+        headerPos += 2;
+    }
 
     const raw = buffer.slice(0, header.totalImageSize);
 
     assert(Buffer.compare(header.otaUpgradeFileIdentifier, upgradeFileIdentifier) === 0, 'Not an OTA file');
-    assert(header.otaHeaderFieldControl === 0, 'Non zero field control not implemented yet');
 
-    let remaining = header.totalImageSize - headerLength;
+    let position = header.otaHeaderLength;
     const elements = [];
-    while (remaining !== 0) {
-        const element = parseSubElement(buffer, headerLength);
+    while (position < header.totalImageSize) {
+        const element = parseSubElement(buffer, position);
         elements.push(element);
-        remaining -= element.data.length + 6;
+        position += element.data.length + 6;
     }
 
-    assert(remaining === 0, 'Size mismatch');
+    assert(position === header.totalImageSize, 'Size mismatch');
     return {header, elements, raw};
 }
 
@@ -130,19 +143,25 @@ function callOnProgress(startTime, lastUpdate, imageBlockRequest, image, logger,
     }
 }
 
-async function isUpdateAvailable(device, logger, isNewImageAvailable) {
+async function isUpdateAvailable(device, logger, isNewImageAvailable, requestPayload) {
     logger.debug(`Check if update available for '${device.ieeeAddr}' (${device.modelID})`);
 
-    const endpoint = getOTAEndpoint(device);
-    assert(endpoint !== null, `Failed to find endpoint which support OTA cluster`);
-    logger.debug(`Using endpoint '${endpoint.ID}'`);
+    if (requestPayload === null) {
+        const endpoint = getOTAEndpoint(device);
+        assert(endpoint !== null, `Failed to find endpoint which support OTA cluster`);
+        logger.debug(`Using endpoint '${endpoint.ID}'`);
 
-    const request = await requestOTA(endpoint);
-    logger.debug(`Got OTA request '${JSON.stringify(request.payload)}'`);
+        const request = await requestOTA(endpoint);
+        logger.debug(`Got OTA request '${JSON.stringify(request.payload)}'`);
+        requestPayload = request.payload;
+    }
 
-    const available = await isNewImageAvailable(request.payload, logger, device);
-    logger.debug(`Updata available for '${device.ieeeAddr}': ${available ? 'YES' : 'NO'}`);
-    return available;
+    const available = await isNewImageAvailable(requestPayload, logger, device);
+    logger.debug(`Update available for '${device.ieeeAddr}': ${available < 0 ? 'YES' : 'NO'}`);
+    if (available > 0) {
+        logger.warn(`Firmware on '${device.ieeeAddr}' is newer than latest firmware online.`);
+    }
+    return (available < 0);
 }
 
 async function updateToLatest(device, logger, onProgress, getNewImage) {

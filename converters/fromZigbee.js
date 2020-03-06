@@ -48,7 +48,7 @@ const toPercentage = (value, min, max) => {
     }
 
     const normalised = (value - min) / (max - min);
-    return (normalised * 100).toFixed(2);
+    return Math.round(normalised * 100);
 };
 
 const toPercentageCR2032 = (voltage) => {
@@ -257,6 +257,18 @@ const converters = {
             }
         },
     },
+    brightness_multi_endpoint: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data.hasOwnProperty('currentLevel')) {
+                const key = `brightness_${getKey(model.endpoint(msg.device), msg.endpoint.ID)}`;
+                const payload = {};
+                payload[key] = msg.data['currentLevel'];
+                return payload;
+            }
+        },
+    },
     electrical_measurement: {
         /**
          * When using this converter also add the following to the configure method of the device:
@@ -304,6 +316,18 @@ const converters = {
         convert: (model, msg, publish, options, meta) => {
             if (msg.data.hasOwnProperty('onOff')) {
                 return {state: msg.data['onOff'] === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+    on_off_multi_endpoint: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data.hasOwnProperty('onOff')) {
+                const key = `state_${getKey(model.endpoint(msg.device), msg.endpoint.ID)}`;
+                const payload = {};
+                payload[key] = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
+                return payload;
             }
         },
     },
@@ -369,6 +393,13 @@ const converters = {
                 tamper: (zoneStatus & 1<<2) > 0,
                 battery_low: (zoneStatus & 1<<3) > 0,
             };
+        },
+    },
+    command_panic: {
+        cluster: 'ssIasAce',
+        type: 'commandPanic',
+        convert: (model, msg, publish, options, meta) => {
+            return {action: 'panic'};
         },
     },
     command_on: {
@@ -486,7 +517,7 @@ const converters = {
             };
         },
     },
-    AC0251100NJ_long_middle: {
+    osram_lightify_switch_long_middle: {
         cluster: 'lightingColorCtrl',
         type: 'commandMoveHue',
         convert: (model, msg, publish, options, meta) => {
@@ -578,7 +609,7 @@ const converters = {
 
             if (voltage) {
                 return {
-                    battery: parseFloat(toPercentageCR2032(voltage)),
+                    battery: toPercentageCR2032(voltage),
                     voltage: voltage, // @deprecated
                     // voltage: voltage / 1000.0,
                 };
@@ -984,6 +1015,15 @@ const converters = {
             return {pressure: calibrateAndPrecisionRoundOptions(pressure, options, 'pressure')};
         },
     },
+    WSDCGQ11LM_pressure: {
+        cluster: 'msPressureMeasurement',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const pressure = msg.data.hasOwnProperty('16') ?
+                parseFloat(msg.data['16']) / 10 : parseFloat(msg.data['measuredValue']);
+            return {pressure: calibrateAndPrecisionRoundOptions(pressure, options, 'pressure')};
+        },
+    },
     WXKG02LM_click: {
         cluster: 'genOnOff',
         type: ['attributeReport', 'readResponse'],
@@ -1018,6 +1058,20 @@ const converters = {
             return {click: 'single'};
         },
     },
+    immax_07046L_arm: {
+        cluster: 'ssIasAce',
+        type: 'commandArm',
+        convert: (model, msg, publish, options, meta) => {
+            const action = msg.data['armmode'];
+            delete msg.data['armmode'];
+            const modeLookup = {
+                0: 'disarm',
+                1: 'arm_stay',
+                3: 'arm_away',
+            };
+            return {action: modeLookup[action]};
+        },
+    },
     KEF1PA_arm: {
         cluster: 'ssIasAce',
         type: 'commandArm',
@@ -1030,14 +1084,6 @@ const converters = {
                 3: 'away',
             };
             return {action: modeLookup[action]};
-        },
-    },
-    KEF1PA_panic: {
-        cluster: 'ssIasAce',
-        type: 'commandPanic',
-        convert: (model, msg, publish, options, meta) => {
-            delete msg.data['armmode'];
-            return {action: 'panic'};
         },
     },
     SJCGQ11LM_water_leak_iaszone: {
@@ -1982,16 +2028,6 @@ const converters = {
             }
         },
     },
-    generic_state_multi_ep: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            const key = `state_${getKey(model.endpoint(msg.device), msg.endpoint.ID)}`;
-            const payload = {};
-            payload[key] = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
-            return payload;
-        },
-    },
     RZHAC_4256251_power: {
         cluster: 'haElectricalMeasurement',
         type: ['attributeReport', 'readResponse'],
@@ -2374,6 +2410,23 @@ const converters = {
             return {action: `${buttonMapping[msg.endpoint.ID]}_${clickMapping[msg.data[3]]}`};
         },
     },
+    ts0042_click: {
+        cluster: 'genOnOff',
+        type: 'raw',
+        convert: (model, msg, publish, options, meta) => {
+            const buttonMapping = {1: 'left', 2: 'right'};
+            const clickMapping = {0: 'single', 1: 'double', 2: 'hold'};
+            return {action: `${buttonMapping[msg.endpoint.ID]}_${clickMapping[msg.data[3]]}`};
+        },
+    },
+    ts0041_click: {
+        cluster: 'genOnOff',
+        type: 'raw',
+        convert: (model, msg, publish, options, meta) => {
+            const clickMapping = {0: 'single', 1: 'double', 2: 'hold'};
+            return {action: `${clickMapping[msg.data[3]]}`};
+        },
+    },
     tint404011_off: {
         cluster: 'genOnOff',
         type: 'commandOff',
@@ -2676,28 +2729,33 @@ const converters = {
             return {pressure: calibrateAndPrecisionRoundOptions(pressure, options, 'pressure')};
         },
     },
-    AC0251100NJ_cmdOn: {
+    osram_lightify_switch_cmdOn: {
         cluster: 'genOnOff',
         type: 'commandOn',
         convert: (model, msg, publish, options, meta) => {
             return {action: 'up'};
         },
     },
-    AC0251100NJ_cmdOff: {
+    osram_lightify_switch_cmdOff: {
         cluster: 'genOnOff',
         type: 'commandOff',
         convert: (model, msg, publish, options, meta) => {
             return {action: 'down'};
         },
     },
-    AC0251100NJ_cmdMoveWithOnOff: {
+    osram_lightify_switch_cmdMoveWithOnOff: {
         cluster: 'genLevelCtrl',
         type: 'commandMoveWithOnOff',
         convert: (model, msg, publish, options, meta) => {
+            const deviceID = msg.device.ieeeAddr;
+            if (!store[deviceID]) {
+                store[deviceID] = {direction: null};
+            }
+            store[deviceID].direction = 'up';
             return {action: 'up_hold'};
         },
     },
-    AC0251100NJ_cmdStop: {
+    osram_lightify_switch_AC0251100NJ_cmdStop: {
         cluster: 'genLevelCtrl',
         type: 'commandStop',
         convert: (model, msg, publish, options, meta) => {
@@ -2709,14 +2767,19 @@ const converters = {
             return {action: map[msg.endpoint.ID]};
         },
     },
-    AC0251100NJ_cmdMove: {
+    osram_lightify_switch_cmdMove: {
         cluster: 'genLevelCtrl',
         type: 'commandMove',
         convert: (model, msg, publish, options, meta) => {
+            const deviceID = msg.device.ieeeAddr;
+            if (!store[deviceID]) {
+                store[deviceID] = {direction: null};
+            }
+            store[deviceID].direction = 'down';
             return {action: 'down_hold'};
         },
     },
-    AC0251100NJ_cmdMoveHue: {
+    osram_lightify_switch_cmdMoveHue: {
         cluster: 'lightingColorCtrl',
         type: 'commandMoveHue',
         convert: (model, msg, publish, options, meta) => {
@@ -2725,24 +2788,39 @@ const converters = {
             }
         },
     },
-    AC0251100NJ_cmdMoveToSaturation: {
+    osram_lightify_switch_cmdMoveToSaturation: {
         cluster: 'lightingColorCtrl',
         type: 'commandMoveToSaturation',
         convert: (model, msg, publish, options, meta) => {
             return {action: 'circle_hold'};
         },
     },
-    AC0251100NJ_cmdMoveToLevelWithOnOff: {
+    osram_lightify_switch_cmdMoveToLevelWithOnOff: {
         cluster: 'genLevelCtrl',
         type: 'commandMoveToLevelWithOnOff',
         convert: (model, msg, publish, options, meta) => {
             return {action: 'circle_click'};
         },
     },
-    AC0251100NJ_cmdMoveToColorTemp: {
+    osram_lightify_switch_cmdMoveToColorTemp: {
         cluster: 'lightingColorCtrl',
         type: 'commandMoveToColorTemp',
         convert: (model, msg, publish, options, meta) => null,
+    },
+    osram_lightify_switch_73743_cmdStop: {
+        cluster: 'genLevelCtrl',
+        type: 'commandStop',
+        convert: (model, msg, publish, options, meta) => {
+            const deviceID = msg.device.ieeeAddr;
+            if (!store[deviceID]) {
+                store[deviceID] = {direction: null};
+            }
+            let direction;
+            if (store[deviceID].direction) {
+                direction = `${store[deviceID].direction}_`;
+            }
+            return {action: `${direction}release`};
+        },
     },
     OJBCR701YZ_statuschange: {
         cluster: 'ssIasZone',
@@ -2776,6 +2854,25 @@ const converters = {
             if (msg.data.hasOwnProperty('currentPositionTiltPercentage')) {
                 const tiltPercentage = msg.data['currentPositionTiltPercentage'];
                 result.tilt = tiltPercentage <= 100 ? (100 - tiltPercentage) : null;
+            }
+            return result;
+        },
+    },
+    cover_position_tilt_inverted: {
+        cluster: 'closuresWindowCovering',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const result = {};
+            // ZigBee officially expects "open" to be 0 and "closed" to be 100 whereas
+            // HomeAssistant etc. work the other way round.
+            // But e.g. Legrand reports "open" to be 100 and "closed" to be 0
+            if (msg.data.hasOwnProperty('currentPositionLiftPercentage')) {
+                const liftPercentage = msg.data['currentPositionLiftPercentage'];
+                result.position = liftPercentage <= 100 ? liftPercentage : null;
+            }
+            if (msg.data.hasOwnProperty('currentPositionTiltPercentage')) {
+                const tiltPercentage = msg.data['currentPositionTiltPercentage'];
+                result.tilt = tiltPercentage <= 100 ? tiltPercentage : null;
             }
             return result;
         },
@@ -3030,6 +3127,69 @@ const converters = {
                 result.measureserial = precisionRound(msg.data['16408'], 2);
             }
 
+            return result;
+        },
+    },
+    ZNMS11LM_closuresDoorLock_report: {
+        cluster: 'closuresDoorLock',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const result = {};
+            const lockStatusLookup = {
+                1: 'finger_not_match',
+                2: 'password_not_match',
+                3: 'reverse_lock', // disable open from outside
+                4: 'reverse_lock_cancel', // enable open from outside
+                5: 'locked',
+                6: 'lock_opened',
+                7: 'finger_add',
+                8: 'finger_delete',
+                9: 'password_add',
+                10: 'password_delete',
+                11: 'lock_opened_inside', // Open form inside reverse lock enbable
+                12: 'lock_opened_outside', // Open form outside reverse lock disable
+                13: 'ring_bell',
+                14: 'change_language_to',
+                15: 'finger_open',
+                16: 'password_open',
+                17: 'door_closed',
+            };
+            result.user = null;
+            result.repeat = null;
+            result.data = null;
+            if (msg.data['65296']) { // finger/password success
+                const data = msg.data['65296'].toString(16);
+                const command = data.substr(0, 1); // 1 finger open, 2 password open
+                const userId = data.substr(5, 2);
+                const userType = data.substr(1, 1); // 1 admin, 2 user
+                result.data = data;
+                result.action = (lockStatusLookup[14+parseInt(command, 16)] +
+                    (userType === '1' ? '_admin' : '_user') + '_id' + parseInt(userId, 16).toString());
+                result.user = parseInt(userId, 16);
+            } else if (msg.data['65297']) { // finger, password failed or bell
+                const data = msg.data['65297'].toString(16);
+                const times = data.substr(0, 1);
+                const type = data.substr(5, 2); // 00 bell, 02 password, 40 error finger
+                result.data = data;
+                if (type === '40') {
+                    result.action = lockStatusLookup[1];
+                    result.repeat = parseInt(times, 16);
+                } else if (type === '02') {
+                    result.action = lockStatusLookup[2];
+                    result.repeat = parseInt(times, 16);
+                } else if (type === '00') {
+                    result.action = lockStatusLookup[13];
+                    result.repeat = null;
+                }
+            } else if (msg.data['65281'] && msg.data['65281']['1']) { // user added/delete
+                const data = msg.data['65281']['1'].toString(16);
+                const command = data.substr(0, 1); // 1 add, 2 delete
+                const userId = data.substr(5, 2);
+                result.data = data;
+                result.action = lockStatusLookup[6+parseInt(command, 16)];
+                result.user = parseInt(userId, 16);
+                result.repeat = null;
+            }
             return result;
         },
     },
@@ -3330,6 +3490,18 @@ const converters = {
             return lookup[value] ? lookup[value] : null;
         },
     },
+    terncy_knob: {
+        cluster: 'manuSpecificClusterAduroSmart',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (typeof msg.data['27'] === 'number') {
+                return {
+                    direction: (msg.data['27'] > 0 ? 'clockwise' : 'counterclockwise'),
+                    number: (Math.abs(msg.data['27']) / 12),
+                };
+            }
+        },
+    },
     orvibo_raw: {
         cluster: 23,
         type: 'raw',
@@ -3429,7 +3601,7 @@ const converters = {
 
             if (voltage) {
                 return {
-                    battery: parseFloat(toPercentageCR2032(voltage)),
+                    battery: toPercentageCR2032(voltage),
                     voltage: voltage,
                 };
             }
@@ -3900,6 +4072,56 @@ const converters = {
         convert: (model, msg, publish, options, meta) => {
             msg.data.occupancy = msg.data.dp === 1027 ? 1 : 0;
             return converters.occupancy_with_timeout.convert(model, msg, publish, options, meta);
+        },
+    },
+    ewelink_action: {
+        cluster: 'genOnOff',
+        type: ['commandOn', 'commandOff', 'commandToggle'],
+        convert: (model, msg, publish, options, meta) => {
+            const lookup = {
+                'commandToggle': {action: 'single'},
+                'commandOn': {action: 'double'},
+                'commandOff': {action: 'long'},
+            };
+            return lookup[msg.type];
+        },
+    },
+    ubisys_c4_scenes: {
+        cluster: 'genScenes',
+        type: 'commandRecall',
+        convert: (model, msg, publish, options, meta) => {
+            return {action: `${msg.endpoint.ID}_scene_${msg.data.groupid}_${msg.data.sceneid}`};
+        },
+    },
+    ubisys_c4_onoff: {
+        cluster: 'genOnOff',
+        type: ['commandOn', 'commandOff', 'commandToggle'],
+        convert: (model, msg, publish, options, meta) => {
+            return {action: `${msg.endpoint.ID}_${msg.type.substr(7).toLowerCase()}`};
+        },
+    },
+    ubisys_c4_level: {
+        cluster: 'genLevelCtrl',
+        type: ['commandMoveWithOnOff', 'commandStopWithOnOff'],
+        convert: (model, msg, publish, options, meta) => {
+            switch (msg.type) {
+            case 'commandMoveWithOnOff':
+                return {action: `${msg.endpoint.ID}_level_move_${msg.data.movemode ? 'down' : 'up'}`};
+            case 'commandStopWithOnOff':
+                return {action: `${msg.endpoint.ID}_level_stop`};
+            }
+        },
+    },
+    ubisys_c4_cover: {
+        cluster: 'closuresWindowCovering',
+        type: ['commandUpOpen', 'commandDownClose', 'commandStop'],
+        convert: (model, msg, publish, options, meta) => {
+            const lookup = {
+                'commandUpOpen': 'open',
+                'commandDownClose': 'close',
+                'commandStop': 'stop',
+            };
+            return {action: `${msg.endpoint.ID}_cover_${lookup[msg.type]}`};
         },
     },
 

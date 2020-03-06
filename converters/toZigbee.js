@@ -204,11 +204,22 @@ const converters = {
     cover_position_tilt: {
         key: ['position', 'tilt'],
         convertSet: async (entity, key, value, meta) => {
-            const isPosition = (key === 'position');
             // ZigBee officially expects "open" to be 0 and "closed" to be 100 whereas
             // HomeAssistant etc. work the other way round.
             value = 100 - value;
-
+            await converters.cover_position_tilt_inverted.convertSet(entity, key, value, meta);
+        },
+        convertGet: async (entity, key, meta) => {
+            await converters.cover_position_tilt_inverted.convertGet(entity, key, meta);
+        },
+    },
+    cover_position_tilt_inverted: {
+        key: ['position', 'tilt'],
+        convertSet: async (entity, key, value, meta) => {
+            const isPosition = (key === 'position');
+            // ZigBee officially expects "open" to be 0 and "closed" to be 100 whereas
+            // HomeAssistant etc. work the other way round.
+            // But e.g. Legrand expects "open" to be 100 and "closed" to be 0
             await entity.command(
                 'closuresWindowCovering',
                 isPosition ? 'goToLiftPercentage' : 'goToTiltPercentage',
@@ -531,6 +542,16 @@ const converters = {
 
             default:
                 cmd = 'moveToColor';
+
+                // Some bulbs e.g. RB 185 C don't turn to red (they don't respond at all) when x: 0.701 and y: 0.299
+                // is send. These values are e.g. send by Home Assistant when clicking red in the color wheel.
+                // If we slighlty modify these values the bulb will respond.
+                // https://github.com/home-assistant/home-assistant/issues/31094
+                if (meta.options.applyRedFix && value.x == 0.701 && value.y === 0.299) {
+                    value.x = 0.7006;
+                    value.y = 0.2993;
+                }
+
                 newState.color = {x: value.x, y: value.y};
                 zclData.colorx = Math.round(value.x * 65535);
                 zclData.colory = Math.round(value.y * 65535);
@@ -802,7 +823,8 @@ const converters = {
             };
 
             if (lookup.hasOwnProperty(value)) {
-                await entity.write('genBasic', {0xFF0D: {value: lookup[value], type: 0x20}}, options.xiaomi);
+                const opts = {...options.xiaomi, timeout: 35000};
+                await entity.write('genBasic', {0xFF0D: {value: lookup[value], type: 0x20}}, opts);
             }
 
             return {state: {sensitivity: value}};
@@ -1621,6 +1643,32 @@ const converters = {
                 'ubisysInactivePowerThreshold',
                 'ubisysStartupSteps',
             ], options.ubisys));
+        },
+    },
+    ubisys_device_setup: {
+        key: ['configure_device_setup'],
+        convertSet: async (entity, key, value, meta) => {
+            const devMgmtEp = meta.device.getEndpoint(232);
+            if (value.hasOwnProperty('inputConfigurations')) {
+                // example: [0, 0, 0, 0]
+                await devMgmtEp.write('manuSpecificUbisysDeviceSetup',
+                    {'inputConfigurations': {elementType: 'data8', elements: value.inputConfigurations}});
+            }
+            if (value.hasOwnProperty('inputActions')) {
+                // example (default for C4): [[0,13,1,6,0,2], [1,13,2,6,0,2], [2,13,3,6,0,2], [3,13,4,6,0,2]]
+                await devMgmtEp.write('manuSpecificUbisysDeviceSetup',
+                    {'inputActions': {elementType: 'octetStr', elements: value.inputActions}});
+            }
+            converters.ubisys_device_setup.convertGet(entity, key, meta);
+        },
+        convertGet: async (entity, key, meta) => {
+            const log = (json) => {
+                meta.logger.warn(
+                    `ubisys: Device setup read for '${meta.options.friendlyName}': ${JSON.stringify(json)}`);
+            };
+            const devMgmtEp = meta.device.getEndpoint(232);
+            log(await devMgmtEp.read('manuSpecificUbisysDeviceSetup', ['inputConfigurations']));
+            log(await devMgmtEp.read('manuSpecificUbisysDeviceSetup', ['inputActions']));
         },
     },
 
